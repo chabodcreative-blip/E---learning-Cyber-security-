@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard · CS CyberSafe Learn{% endblock %}
+{% block content %}
+<section class="dashboard-hero">
+<div class="container">
+  <div class="hero-grid">
+    <div>
+      <div class="eyebrow"><i class="bi bi-person-check me-1"></i> Learner dashboard</div>
+      <h1>Welcome back, {{ current_user.full_name.split()[0] }}.</h1>
+      <p>Keep building safer digital habits through structured lessons, practical scenarios and assessments.</p>
+    </div>
+    <div class="hero-shield"><i class="bi bi-shield-check"></i><span>Learn · Practise · Verify</span></div>
+  </div>
+</div>
+</section>
+<div class="container py-4">
+  <div class="row g-3 mb-4">
+    <div class="col-sm-6 col-lg-3"><div class="stat-card"><span class="stat-icon"><i class="bi bi-journal-bookmark"></i></span><div><small>Available courses</small><strong>{{ courses|length }}</strong></div></div></div>
+    <div class="col-sm-6 col-lg-3"><div class="stat-card"><span class="stat-icon"><i class="bi bi-award"></i></span><div><small>Certificates</small><strong>{{ certs|length }}</strong></div></div></div>
+    <div class="col-sm-6 col-lg-3"><div class="stat-card"><span class="stat-icon"><i class="bi bi-activity"></i></span><div><small>Recent activity</small><strong>{{ acts|length }}</strong></div></div></div>
+    <div class="col-sm-6 col-lg-3"><div class="stat-card"><span class="stat-icon"><i class="bi bi-person"></i></span><div><small>Account</small><strong class="fs-6 mt-2">Learner</strong></div></div></div>
+  </div>
+
+  <div class="section-heading"><div><div class="eyebrow">Your learning</div><h2>Continue your courses</h2></div><a href="{{ url_for('auth.courses') }}" class="btn btn-outline-primary">View catalogue</a></div>
+  <div class="row g-4 mb-5">
+  {% for c in courses %}
+    <div class="col-md-6 col-xl-4"><article class="course-card enhanced-card">
+      <div class="course-art art-{{ (c.id % 6) + 1 }}"><i class="bi bi-{{ ['shield-lock','key','envelope-exclamation','cash-coin','person-lock','bug','database-lock'][c.id-1] if c.id <= 7 else 'shield' }}"></i><span>COURSE {{ loop.index }}</span></div>
+      <div class="p-4"><h3>{{ c.title }}</h3><p class="muted line-clamp">{{ c.description }}</p>
+      <div class="d-flex justify-content-between small mb-2"><span>Lesson progress</span><strong>{{ progress(c) }}%</strong></div>
+      <div class="progress course-progress"><div class="progress-bar" style="width:{{ progress(c) }}%"></div></div>
+      <a class="stretched-link course-link mt-3 d-inline-block" href="{{url_for('auth.course_detail',course_id=c.id)}}">{{ 'Continue learning' if progress(c)>0 else 'Start course' }} <i class="bi bi-arrow-right"></i></a></div>
+    </article></div>
+  {% endfor %}
+  </div>
+
+  <div class="section-heading"><div><div class="eyebrow">Achievement centre</div><h2>Your certificates</h2></div></div>
+  {% if certs %}
+    <div class="row g-3 mb-5">{% for cert in certs %}<div class="col-md-6"><div class="certificate-mini"><span class="certificate-icon"><i class="bi bi-award-fill"></i></span><div class="flex-grow-1"><strong>{{ cert.certificate_id }}</strong><p class="muted mb-2">Issued {{ cert.issued_at.strftime('%d %B %Y') }}</p><a href="{{url_for('auth.certificate',certificate_id=cert.certificate_id)}}">View certificate <i class="bi bi-arrow-right"></i></a></div></div></div>{% endfor %}</div>
+  {% else %}
+    <div class="empty-state mb-5"><div class="empty-icon"><i class="bi bi-award"></i></div><div><h3>Your first certificate starts here</h3><p>Complete every required lesson and pass the final assessment with at least 70% to receive a verifiable certificate.</p><a href="{{url_for('auth.courses')}}" class="btn btn-primary">Explore courses</a></div></div>
+  {% endif %}
+
+  <div class="section-heading"><div><div class="eyebrow">Learning history</div><h2>Recent activity</h2></div></div>
+  <div class="activity-list mb-4">
+  {% if acts %}{% for a in acts %}<div class="activity-row"><span class="activity-dot"><i class="bi bi-check2"></i></span><div><strong>{{a.action}}</strong><small>{{a.created_at.strftime('%d %b %Y · %H:%M')}}</small></div></div>{% endfor %}
+  {% else %}<div class="empty-state compact"><div class="empty-icon"><i class="bi bi-clock-history"></i></div><p class="mb-0">No learning activity recorded yet.</p></div>{% endif %}
+  </div>
+</div>
+{% endblock %}

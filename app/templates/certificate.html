@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block title %}{{cert.certificate_id}} · Certificate{% endblock %}{% block content %}
+<div class="container py-5">
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4"><div><div class="eyebrow">Achievement centre</div><h1 class="h2 mb-0">Your certificate</h1></div><div class="d-flex gap-2"><a class="btn btn-primary" href="{{url_for('auth.certificate_pdf',certificate_id=cert.certificate_id)}}"><i class="bi bi-file-earmark-pdf me-1"></i> Download PDF</a><a class="btn btn-outline-primary" href="{{url_for('auth.verify_certificate',certificate_id=cert.certificate_id)}}"><i class="bi bi-qr-code me-1"></i> Verify</a></div></div>
+<div class="certificate-wrap"><div class="certificate">
+<div class="cert-corner cert-corner-a"></div><div class="cert-corner cert-corner-b"></div>
+<div class="cert-brand"><span class="brand-mark"><i class="bi bi-shield-lock-fill"></i></span><strong>CS CYBERSAFE LEARN</strong></div>
+<div class="cert-label">CERTIFICATE OF COMPLETION</div><p class="cert-intro">This certificate is proudly presented to</p><h2>{{user.full_name}}</h2><div class="cert-line"></div><p class="cert-intro">for successfully completing the course</p><h3>{{course.title}}</h3>
+<div class="cert-meta"><span><small>Certificate ID</small><strong>{{cert.certificate_id}}</strong></span><span><small>Issue date</small><strong>{{cert.issued_at.strftime('%d %B %Y')}}</strong></span><span class="cert-status"><small>Status</small><strong><i class="bi bi-patch-check-fill"></i> Verified</strong></span></div>
+<p class="cert-footer">This educational certificate is issued by CS CyberSafe Learn. Use the certificate ID or QR verification page to confirm its authenticity.</p>
+</div></div></div>{% endblock %}

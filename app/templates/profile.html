@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Profile · CS CyberSafe Learn{% endblock %}
+{% block content %}
+<section class="page-banner"><div class="container"><div class="eyebrow"><i class="bi bi-person-circle me-1"></i> Account</div><h1>Your profile</h1><p>Manage your learner information and account security.</p></div></section>
+<div class="container py-4">
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="profile-card">
+      <div class="profile-avatar">{{ current_user.full_name[:1].upper() }}</div>
+      <h2>{{ current_user.full_name }}</h2><p class="muted mb-4">{{ current_user.email }}</p>
+      <span class="role-pill"><i class="bi bi-mortarboard-fill"></i> Student / Learner</span>
+      <div class="profile-stats"><div><strong>{{ student_courses }}</strong><small>Enrolled</small></div><div><strong>{{ cert_count }}</strong><small>Certificates</small></div><div><strong>{{ activity_count }}</strong><small>Activities</small></div></div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="settings-card">
+      <div class="section-heading"><div><div class="eyebrow">Personal information</div><h2>Profile details</h2></div></div>
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="row g-3"><div class="col-md-6"><label class="form-label">Full name</label><input class="form-control" name="full_name" value="{{ current_user.full_name }}" required maxlength="120"></div>
+        <div class="col-md-6"><label class="form-label">Email address</label><input class="form-control" type="email" name="email" value="{{ current_user.email }}" required maxlength="160"></div></div>
+        <hr class="my-4"><div class="eyebrow mb-1">Security</div><h3 class="h5 mb-3">Change password <span class="muted fw-normal">(optional)</span></h3>
+        <div class="row g-3"><div class="col-md-4"><label class="form-label">Current password</label><input class="form-control" type="password" name="current_password"></div><div class="col-md-4"><label class="form-label">New password</label><input class="form-control" type="password" name="new_password" minlength="8"></div><div class="col-md-4"><label class="form-label">Confirm new password</label><input class="form-control" type="password" name="confirm_password" minlength="8"></div></div>
+        <button class="btn btn-primary mt-4"><i class="bi bi-check2-circle me-1"></i> Save changes</button>
+      </form>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}

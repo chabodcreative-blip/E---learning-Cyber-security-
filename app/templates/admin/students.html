@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<h1>Students</h1><div class="table-responsive"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Joined</th></tr></thead><tbody>{% for s in students %}<tr><td>{{s.full_name}}</td><td>{{s.email}}</td><td>{{s.created_at.strftime('%d %b %Y')}}</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
