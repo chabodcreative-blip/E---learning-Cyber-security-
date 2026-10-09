@@ -1,46 +1,59 @@
 # CS CyberSafe Learn
 
-**Project:** Design and Implementation of an E-Learning Platform for Cyber Safety Education.
+CS CyberSafe Learn is a focused cyber-safety e-learning platform aligned to the written project specification.
 
-A Flask + SQLite educational platform implementing structured cyber-safety courses, learner accounts, profile management, progress tracking, lesson knowledge checks, scenario practice, final assessments, automatically issued certificates, QR verification and an administrator area.
+## Learning scope
 
-## Run locally
+The learner experience is organised around the project's 12 cyber-safety topics:
 
-1. Install Python 3.11+.
-2. Open this folder in VS Code.
-3. Double-click `RUN.bat`.
-4. Visit `http://127.0.0.1:5000`.
+1. Introduction to Cyber Safety
+2. Cybercrime
+3. Phishing
+4. Online Scams
+5. Password Security
+6. Social Media Safety
+7. Personal Information Protection
+8. Malware Awareness
+9. Safe Internet Browsing
+10. Email Security
+11. Cyberbullying
+12. Two-Factor Authentication
 
-The script creates `.venv` and installs `requirements.txt`. No XAMPP or MySQL is required.
+Each topic contains a focused lesson, an instructional visual, topic-specific examples, a knowledge check, automatic scoring and progress tracking.
 
-## Demo accounts
+## Admin scope
 
-- Administrator: `admin@cybersafe.local` / `Admin@12345`
-- Student: `student@cybersafe.local` / `Student@12345`
+Administrators can:
+- review learner accounts and activate/deactivate them;
+- manage lesson content and topic assignments;
+- manage knowledge-check questions and answers;
+- review learner knowledge-check results;
+- view curriculum counts from the dashboard.
 
-Change these credentials before any public deployment.
+### Learner progression and certificates
+Each lesson now saves a percentage-based progress checkpoint while the learner studies. The checkpoint is stored per learner and lesson, displayed on topic and dashboard pages, and can be resumed from the saved point. A lesson remains incomplete until its existing 70% knowledge-check requirement is met.
 
-## Deployment
+Learners who complete every lesson receive a certificate record with a unique certificate number and issue date. The certificate is available from the learner dashboard/profile and can be viewed in the browser or downloaded as a PDF. Administrators can see whether a learner's certificate has been issued.
 
-Set a strong `SECRET_KEY` and a PostgreSQL `DATABASE_URL` in the deployment environment. Gunicorn is configured through `Procfile`.
+## Run
 
-Example start command: `gunicorn run:app`
+Install dependencies from `requirements.txt`, then run:
 
-For Render, connect the GitHub repository, configure the environment variables, and use the Gunicorn start command. The application uses SQLAlchemy so PostgreSQL can replace SQLite without changing the learning logic.
+```bash
+python run.py
+```
 
-## Research basis
+Default development credentials are controlled by environment variables. If none are supplied, the seed creates:
+- Admin: `admin@cybersafe.local` / `Admin@12345`
+- Demo learner: `student@cybersafe.local` / `Student@12345`
 
-The educational approach is designed to be informed by authoritative cybersecurity and digital-safety guidance such as NIST and CISA, with UNICEF and other reputable privacy/digital-safety sources used where appropriate. Lesson wording in this demonstration is original and intentionally beginner-friendly.
-
-## Security notes
-
-Passwords are hashed; CSRF protection is enabled; admin routes require the admin role; server-side validation is used; secrets belong in environment variables; certificate QR codes contain a verification URL/ID rather than sensitive learner data.
+Change these values for any real deployment.
 
 
-## Certificate workflow
+### Student profile pictures
+Learners can upload or change a profile picture from their Profile page. Authorized administrators can view the picture from the learner list and learner detail page.
 
-A learner becomes certificate-eligible after completing all required lessons and passing the course final assessment at 70% or above. The system automatically creates a unique certificate ID, stores the issue date, provides a certificate page and professional PDF download, and exposes a public verification page through the QR code.
+### Learning flow and visual lessons
+The learner flow is intentionally sequential: topic overview → detailed lesson material → practical scenario and visual demonstration → separate knowledge check → automatic result → completion/progress update. The knowledge check is never displayed beside the teaching material.
 
-## Learner profile
-
-Authenticated learners can open Profile from the main navigation to update their full name and email address and optionally change their password. Existing account fields are reused so this UI improvement does not require destructive database changes.
+The restricted administrator sign-in is available directly at `/admin/login`. It is intentionally kept separate from the learner-facing navigation.

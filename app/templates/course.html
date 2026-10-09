@@ -1,3 +1,30 @@
-{% extends 'base.html' %}{% block title %}{{course.title}} · CS CyberSafe Learn{% endblock %}{% block content %}
-<section class="course-hero"><div class="container"><div class="row align-items-center g-4"><div class="col-lg-8"><div class="eyebrow">Course {{course.id}} · Cyber safety education</div><h1>{{course.title}}</h1><p>{{course.description}}</p>{% if current_user.is_authenticated and enrolled %}<div class="course-progress-box"><div class="d-flex justify-content-between"><span>Your progress</span><strong>{{progress}}%</strong></div><div class="progress mt-2"><div class="progress-bar" style="width:{{progress}}%"></div></div></div>{% else %}<form method="post" action="{{url_for('auth.enroll',course_id=course.id)}}"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><button class="btn btn-primary btn-lg">Enroll in course <i class="bi bi-arrow-right ms-1"></i></button></form>{% endif %}</div><div class="col-lg-4"><div class="course-hero-icon"><i class="bi bi-shield-lock-fill"></i><span>{{course.modules|length}} modules</span></div></div></div></div></section>
-<div class="container py-5">{% for m in course.modules %}<section class="module-section"><div class="module-number">{{'%02d'|format(loop.index)}}</div><div class="flex-grow-1"><div class="eyebrow">Module {{loop.index}}</div><h2>{{m.title}}</h2><div class="lesson-list">{% for l in m.lessons %}<a class="lesson-item" href="{{url_for('auth.lesson',lesson_id=l.id)}}"><span class="lesson-index">{{loop.index}}</span><span class="flex-grow-1"><strong>{{l.title}}</strong><small>Lesson {{l.position}} · Knowledge check included</small></span><i class="bi bi-arrow-right"></i></a>{% endfor %}</div></div></section>{% endfor %}{% if current_user.is_authenticated and enrolled %}<div class="assessment-cta"><div><div class="eyebrow">Final step</div><h2>Ready for your final assessment?</h2><p class="mb-0">Complete every required lesson before attempting the assessment.</p></div><a class="btn btn-dark" href="{{url_for('auth.final_assessment',course_id=course.id)}}">Start assessment <i class="bi bi-arrow-right ms-1"></i></a></div>{% endif %}</div>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}{{topic.title}} · CS CyberSafe Learn{% endblock %}
+{% block content %}
+<section class="topic-hero motion-section">
+  <div class="container topic-hero-grid">
+    <div class="topic-hero-copy">
+      <span class="eyebrow">TOPIC {{'%02d'|format(topic.position)}}</span>
+      <h1>{{topic.title}}</h1>
+      <p>{{topic.description}}</p>
+      {% if current_user.is_authenticated %}<div class="topic-progress-line"><span>Your progress</span><b>{{progress}}%</b><div><i style="width:{{progress}}%"></i></div></div>{% endif %}
+      <a class="primary-btn" href="#learning-material">Start this topic <span aria-hidden="true">→</span></a>
+    </div>
+    <div class="topic-motion-frame">
+      <img src="{{url_for('static', filename='images/motion/' ~ '%02d'|format(topic.position) ~ '.svg')}}" alt="Animated learning demonstration for {{topic.title}}">
+      <span class="motion-label">{% if topic.position == 1 %}Pause → Check → Verify{% elif topic.position == 2 %}Notice → Secure → Report{% elif topic.position == 3 %}Message → Inspect → Verify{% elif topic.position == 4 %}Promise → Pressure → Stop{% elif topic.position == 5 %}Reuse → Exposure → Separate{% elif topic.position == 6 %}Post → Audience → Review{% elif topic.position == 7 %}Request → Purpose → Decide{% elif topic.position == 8 %}Download → Warning → Stop{% elif topic.position == 9 %}Search → Address → Verify{% elif topic.position == 10 %}Message → File → Confirm{% elif topic.position == 11 %}Harm → Evidence → Support{% else %}Login → Code → Protect{% endif %}</span>
+    </div>
+  </div>
+</section>
+<section id="learning-material" class="topic-learning"><div class="container narrow"><div class="learning-intro"><span class="eyebrow">LEARNING PATH</span><h2>Learn it through a real situation.</h2><p>The moving example shows the idea first. Open the lesson when you are ready to go deeper.</p></div>
+{% for lesson in topic.lessons %}{% set lp = lesson_progress.get(lesson.id, 0) %}<article class="lesson-row lesson-row-progress">
+  <span class="lesson-row-number">{{'%02d'|format(loop.index)}}</span>
+  <div class="lesson-row-copy"><span class="topic-kicker">LESSON {{lesson.position}}</span><h3>{{lesson.title}}</h3><p>{{lesson.objectives}}</p>
+    <div class="lesson-progress-meta"><span>{% if lp == 100 %}Completed{% elif lp > 0 %}In progress{% else %}Not started{% endif %}</span><b>{{lp}}%</b></div>
+    <div class="lesson-progress-bar" aria-label="{{lp}}% complete"><i style="width:{{lp}}%"></i></div>
+    <div class="lesson-tags"><span>Learning material</span><span>Knowledge check</span></div>
+  </div>
+  <a class="round-arrow" href="{{url_for('auth.lesson',lesson_id=lesson.id)}}" aria-label="{% if lp %}Resume{% else %}Study{% endif %} {{lesson.title}}">→</a>
+</article>{% endfor %}
+</div></section>
+{% endblock %}

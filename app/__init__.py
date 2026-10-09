@@ -3,6 +3,7 @@ from flask import Flask
 from flask_login import LoginManager
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import CSRFProtect
+from sqlalchemy import inspect, text
 from config import Config
 
 db = SQLAlchemy()
@@ -16,9 +17,7 @@ def create_app(config_class=Config):
     app.config.from_object(config_class)
     Path(app.config['UPLOAD_FOLDER']).mkdir(parents=True, exist_ok=True)
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
-    db.init_app(app)
-    login_manager.init_app(app)
-    csrf.init_app(app)
+    db.init_app(app); login_manager.init_app(app); csrf.init_app(app)
     from .routes import bp
     app.register_blueprint(bp)
     @app.template_filter('fromjson')
@@ -39,6 +38,21 @@ def create_app(config_class=Config):
         return render_template('500.html'), 500
     with app.app_context():
         db.create_all()
+
+        # Lightweight compatibility migration for databases created before
+        # student profile pictures were added.  create_all() does not add a
+        # new column to an existing SQLite table.
+        if db.engine.dialect.name == 'sqlite':
+            columns = {column['name'] for column in inspect(db.engine).get_columns('user')}
+            if 'profile_photo' not in columns:
+                with db.engine.begin() as connection:
+                    connection.execute(text('ALTER TABLE user ADD COLUMN profile_photo VARCHAR(255)'))
+
+            progress_columns = {column['name'] for column in inspect(db.engine).get_columns('cyber_lesson_progress')}
+            if 'progress_percent' not in progress_columns:
+                with db.engine.begin() as connection:
+                    connection.execute(text('ALTER TABLE cyber_lesson_progress ADD COLUMN progress_percent INTEGER NOT NULL DEFAULT 0'))
+
         from .seed import seed_database
         seed_database()
     return app

@@ -1,287 +1,523 @@
+import json
 import re
+import uuid
 from datetime import datetime
+from pathlib import Path
 from io import BytesIO
-from flask import Blueprint, render_template, redirect, url_for, flash, request, abort, send_file
+from flask import Blueprint, render_template, redirect, url_for, flash, request, abort, current_app, send_file
 from flask_login import login_user, logout_user, login_required, current_user
 from sqlalchemy import func
+from werkzeug.utils import secure_filename
 from . import db, login_manager
-from .models import User, Course, Module, Lesson, QuizQuestion, Scenario, CourseEnrollment, LessonProgress, QuizAttempt, FinalAttempt, Certificate, LearningActivity
-from .forms import RegisterForm, LoginForm
+from .models import User, Topic, Lesson, QuizQuestion, LessonProgress, QuizAttempt, LearningActivity, Certificate
+from .forms import RegisterForm, LoginForm, AdminLoginForm
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import mm
 
-bp=Blueprint('auth',__name__)
-
-def record(action):
-    db.session.add(LearningActivity(user_id=current_user.id, action=action)); db.session.commit()
-
-def enrolled(course):
-    return CourseEnrollment.query.filter_by(user_id=current_user.id,course_id=course.id).first() is not None
-
-def course_progress(course):
-    lessons=[l for m in course.modules for l in m.lessons]
-    if not lessons:return 0
-    done=LessonProgress.query.filter_by(user_id=current_user.id,completed=True).filter(LessonProgress.lesson_id.in_([l.id for l in lessons])).count()
-    return round(done/len(lessons)*100)
+bp = Blueprint('auth', __name__)
 
 @login_manager.user_loader
-def load_user(user_id): return db.session.get(User,int(user_id))
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+def record(action):
+    db.session.add(LearningActivity(user_id=current_user.id, action=action))
+    db.session.commit()
+
+def progress_for_user(user_id):
+    total = Lesson.query.count()
+    if not total: return 0
+    done = LessonProgress.query.filter_by(user_id=user_id, completed=True).count()
+    return round(done / total * 100)
+
+def topic_progress(topic, user_id):
+    total = len(topic.lessons)
+    if not total: return 0
+    ids = [l.id for l in topic.lessons]
+    done = LessonProgress.query.filter_by(user_id=user_id, completed=True).filter(LessonProgress.lesson_id.in_(ids)).count()
+    return round(done / total * 100)
+
+def lesson_progress_for_user(lesson_id, user_id):
+    progress = LessonProgress.query.filter_by(user_id=user_id, lesson_id=lesson_id).first()
+    if not progress:
+        return 0
+    return 100 if progress.completed else max(0, min(99, progress.progress_percent or 0))
+
+
+def get_or_create_lesson_progress(user_id, lesson_id):
+    progress = LessonProgress.query.filter_by(user_id=user_id, lesson_id=lesson_id).first()
+    if not progress:
+        progress = LessonProgress(user_id=user_id, lesson_id=lesson_id, progress_percent=0)
+        db.session.add(progress)
+    return progress
+
+
+def issue_certificate_if_eligible(user_id):
+    total = Lesson.query.count()
+    if not total:
+        return None
+    completed = LessonProgress.query.filter_by(user_id=user_id, completed=True).count()
+    if completed < total:
+        return None
+    certificate = Certificate.query.filter_by(user_id=user_id).first()
+    if certificate:
+        return certificate
+    certificate = Certificate(
+        user_id=user_id,
+        certificate_number=f"CSCL-{datetime.utcnow():%Y%m%d}-{user_id:06d}"
+    )
+    db.session.add(certificate)
+    db.session.commit()
+    return certificate
+
+
+def admin_required():
+    if not current_user.is_authenticated:
+        return redirect(url_for('auth.admin_login'))
+    if current_user.role != 'admin': abort(403)
+    if not current_user.is_active:
+        logout_user(); return redirect(url_for('auth.admin_login'))
+    return None
+
+def _save_content_image(file_storage):
+    if not file_storage or not file_storage.filename:
+        return None
+    ext = file_storage.filename.rsplit('.', 1)[-1].lower() if '.' in file_storage.filename else ''
+    if ext not in {'png','jpg','jpeg','webp'}:
+        raise ValueError('Use PNG, JPG, JPEG or WebP images for lesson content.')
+    filename = f'lesson_{uuid.uuid4().hex}.{ext}'
+    destination = Path(current_app.config['UPLOAD_FOLDER']) / filename
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    file_storage.save(destination)
+    return f'uploads/{filename}'
 
 @bp.route('/')
-def home(): return render_template('home.html',courses=Course.query.all())
+def home():
+    return render_template('home.html', topics=Topic.query.order_by(Topic.position).all())
 
-@bp.route('/register',methods=['GET','POST'])
+@bp.route('/register', methods=['GET','POST'])
 def register():
-    if current_user.is_authenticated:return redirect(url_for('auth.dashboard'))
-    form=RegisterForm()
+    if current_user.is_authenticated: return redirect(url_for('auth.dashboard'))
+    form = RegisterForm()
     if form.validate_on_submit():
-        if User.query.filter(func.lower(User.email)==form.email.data.lower()).first(): flash('An account with that email already exists.','danger')
+        if User.query.filter(func.lower(User.email) == form.email.data.lower()).first():
+            flash('An account with that email already exists.', 'danger')
         else:
-            u=User(full_name=form.full_name.data.strip(),email=form.email.data.lower().strip());u.set_password(form.password.data);db.session.add(u);db.session.commit();login_user(u);flash('Account created successfully.','success');return redirect(url_for('auth.dashboard'))
-    return render_template('auth/register.html',form=form)
+            u = User(full_name=form.full_name.data.strip(), email=form.email.data.lower().strip())
+            u.set_password(form.password.data); db.session.add(u); db.session.commit(); login_user(u)
+            record('Account registered'); flash('Account created successfully.', 'success')
+            return redirect(url_for('auth.dashboard'))
+    return render_template('auth/register.html', form=form)
 
-@bp.route('/login',methods=['GET','POST'])
+@bp.route('/login', methods=['GET','POST'])
 def login():
-    if current_user.is_authenticated:return redirect(url_for('auth.dashboard'))
-    form=LoginForm()
+    if current_user.is_authenticated: return redirect(url_for('auth.dashboard'))
+    form = LoginForm()
     if form.validate_on_submit():
-        u=User.query.filter(func.lower(User.email)==form.email.data.lower()).first()
-        if u and u.check_password(form.password.data): login_user(u);return redirect(url_for('auth.dashboard'))
-        flash('Invalid email or password.','danger')
-    return render_template('auth/login.html',form=form)
+        u = User.query.filter(func.lower(User.email) == form.email.data.lower()).first()
+        if u and u.is_active and u.check_password(form.password.data):
+            u.last_login = datetime.utcnow(); db.session.commit(); login_user(u); record('Successful login')
+            return redirect(url_for('auth.admin_dashboard' if u.role == 'admin' else 'auth.dashboard'))
+        flash('Invalid email or password.', 'danger')
+    return render_template('auth/login.html', form=form)
+
+@bp.route('/admin/login', methods=['GET','POST'])
+def admin_login():
+    if current_user.is_authenticated:
+        if current_user.role == 'admin': return redirect(url_for('auth.admin_dashboard'))
+        logout_user()
+    form = AdminLoginForm()
+    if form.validate_on_submit():
+        u = User.query.filter(func.lower(User.email) == form.email.data.strip().lower()).first()
+        if u and u.role == 'admin' and u.is_active and u.check_password(form.password.data):
+            u.last_login = datetime.utcnow(); db.session.commit(); login_user(u)
+            return redirect(url_for('auth.admin_dashboard'))
+        flash('Invalid administrator credentials.', 'danger')
+    return render_template('admin/login.html', form=form)
 
 @bp.route('/logout')
 @login_required
-def logout(): logout_user();flash('You have been logged out.','success');return redirect(url_for('auth.home'))
+def logout():
+    logout_user(); flash('You have been logged out.', 'success'); return redirect(url_for('auth.home'))
 
-
-@bp.route('/profile', methods=['GET', 'POST'])
-@login_required
-def profile():
-    if request.method == 'POST':
-        full_name = (request.form.get('full_name') or '').strip()
-        email = (request.form.get('email') or '').strip().lower()
-        current_password = request.form.get('current_password') or ''
-        new_password = request.form.get('new_password') or ''
-        confirm_password = request.form.get('confirm_password') or ''
-
-        if len(full_name) < 2 or len(full_name) > 120:
-            flash('Please enter a valid full name.', 'danger')
-            return redirect(url_for('auth.profile'))
-        if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
-            flash('Please enter a valid email address.', 'danger')
-            return redirect(url_for('auth.profile'))
-
-        other = User.query.filter(func.lower(User.email) == email, User.id != current_user.id).first()
-        if other:
-            flash('That email address is already in use.', 'danger')
-            return redirect(url_for('auth.profile'))
-
-        current_user.full_name = full_name
-        current_user.email = email
-
-        if new_password:
-            if not current_user.check_password(current_password):
-                flash('Your current password is incorrect.', 'danger')
-                return redirect(url_for('auth.profile'))
-            if len(new_password) < 8:
-                flash('The new password must be at least 8 characters.', 'danger')
-                return redirect(url_for('auth.profile'))
-            if new_password != confirm_password:
-                flash('The new passwords do not match.', 'danger')
-                return redirect(url_for('auth.profile'))
-            current_user.set_password(new_password)
-
-        db.session.commit()
-        flash('Profile updated successfully.', 'success')
-        return redirect(url_for('auth.profile'))
-
-    student_courses = CourseEnrollment.query.filter_by(user_id=current_user.id).count()
-    cert_count = Certificate.query.filter_by(user_id=current_user.id, revoked=False).count()
-    activity_count = LearningActivity.query.filter_by(user_id=current_user.id).count()
-    return render_template('profile.html',
-                           student_courses=student_courses,
-                           cert_count=cert_count,
-                           activity_count=activity_count)
+@bp.route('/admin/logout')
+def admin_logout():
+    logout_user(); return redirect(url_for('auth.admin_login'))
 
 @bp.route('/dashboard')
 @login_required
 def dashboard():
-    courses=Course.query.all(); certs=Certificate.query.filter_by(user_id=current_user.id,revoked=False).all(); acts=LearningActivity.query.filter_by(user_id=current_user.id).order_by(LearningActivity.created_at.desc()).limit(8).all()
-    return render_template('dashboard.html',courses=courses,certs=certs,acts=acts,progress=course_progress)
+    if current_user.role == 'admin': return redirect(url_for('auth.admin_dashboard'))
+    topics = Topic.query.order_by(Topic.position).all()
+    attempts = QuizAttempt.query.filter_by(user_id=current_user.id).order_by(QuizAttempt.created_at.desc()).limit(8).all()
+    activities = LearningActivity.query.filter_by(user_id=current_user.id).order_by(LearningActivity.created_at.desc()).limit(8).all()
+    topic_rows=[(t, topic_progress(t, current_user.id)) for t in topics]
+    certificate = issue_certificate_if_eligible(current_user.id)
+    in_progress = [(lesson, lesson_progress_for_user(lesson.id, current_user.id)) for lesson in Lesson.query.order_by(Lesson.position).all()
+                   if 0 < lesson_progress_for_user(lesson.id, current_user.id) < 100]
+    return render_template('dashboard.html', topic_rows=topic_rows, progress=progress_for_user(current_user.id), attempts=attempts,
+                           activities=activities, completed_count=LessonProgress.query.filter_by(user_id=current_user.id, completed=True).count(),
+                           total_lessons=Lesson.query.count(), in_progress=in_progress, certificate=certificate)
 
-@bp.route('/courses')
-def courses(): return render_template('courses.html',courses=Course.query.all())
-
-@bp.route('/course/<int:course_id>')
-def course_detail(course_id):
-    c=db.session.get(Course,course_id) or abort(404)
-    return render_template('course.html',course=c,progress=course_progress(c) if current_user.is_authenticated else 0,enrolled=enrolled(c) if current_user.is_authenticated else False)
-
-@bp.route('/course/<int:course_id>/enroll',methods=['POST'])
+@bp.route('/profile', methods=['GET','POST'])
 @login_required
-def enroll(course_id):
-    c=db.session.get(Course,course_id) or abort(404)
-    if not enrolled(c):db.session.add(CourseEnrollment(user_id=current_user.id,course_id=c.id));db.session.commit();record(f'Enrolled in {c.title}')
-    return redirect(url_for('auth.course_detail',course_id=c.id))
+def profile():
+    if current_user.role == 'admin': return redirect(url_for('auth.admin_dashboard'))
+    if request.method == 'POST':
+        full_name = (request.form.get('full_name') or '').strip(); email = (request.form.get('email') or '').strip().lower()
+        if len(full_name) < 2 or len(full_name) > 120 or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            flash('Please enter a valid name and email.', 'danger'); return redirect(url_for('auth.profile'))
+        other = User.query.filter(func.lower(User.email) == email, User.id != current_user.id).first()
+        if other: flash('That email address is already in use.', 'danger'); return redirect(url_for('auth.profile'))
+
+        current_user.full_name, current_user.email = full_name, email
+        new_password = request.form.get('new_password') or ''
+        if new_password:
+            if not current_user.check_password(request.form.get('current_password') or ''):
+                flash('Your current password is incorrect.', 'danger'); return redirect(url_for('auth.profile'))
+            if len(new_password) < 8 or new_password != request.form.get('confirm_password'):
+                flash('New passwords must match and contain at least 8 characters.', 'danger'); return redirect(url_for('auth.profile'))
+            current_user.set_password(new_password)
+
+        db.session.commit(); flash('Profile updated successfully.', 'success'); return redirect(url_for('auth.profile'))
+    return render_template('profile.html', attempt_count=QuizAttempt.query.filter_by(user_id=current_user.id).count(),
+                           completed=LessonProgress.query.filter_by(user_id=current_user.id, completed=True).count(),
+                           total=Lesson.query.count(), certificate=issue_certificate_if_eligible(current_user.id))
+
+
+def _save_profile_image(file_storage, user_id):
+    if not file_storage or not file_storage.filename:
+        return None
+    ext = file_storage.filename.rsplit('.', 1)[-1].lower() if '.' in file_storage.filename else ''
+    if ext not in {'png', 'jpg', 'jpeg', 'webp'}:
+        raise ValueError('Use PNG, JPG, JPEG or WebP profile images.')
+    filename = f'profile_{user_id}_{uuid.uuid4().hex}.{ext}'
+    destination = Path(current_app.config['UPLOAD_FOLDER']) / filename
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    file_storage.save(destination)
+    return f'uploads/{filename}'
+
+@bp.route('/profile/photo', methods=['POST'])
+@login_required
+def profile_photo():
+    if current_user.role == 'admin': return redirect(url_for('auth.admin_dashboard'))
+    profile_image = request.files.get('profile_image')
+    if not profile_image or not profile_image.filename:
+        flash('Choose a profile picture before uploading.', 'warning')
+        return redirect(url_for('auth.profile'))
+    try:
+        current_user.profile_photo = _save_profile_image(profile_image, current_user.id)
+        db.session.commit()
+        flash('Profile picture updated successfully.', 'success')
+    except ValueError as exc:
+        flash(str(exc), 'danger')
+    return redirect(url_for('auth.profile'))
+
+@bp.route('/topics')
+@bp.route('/courses')
+def topics():
+    return render_template('courses.html', topics=Topic.query.order_by(Topic.position).all())
+
+@bp.route('/topic/<int:topic_id>')
+@bp.route('/course/<int:course_id>')
+def topic_detail(topic_id=None, course_id=None):
+    topic = db.session.get(Topic, topic_id or course_id) or abort(404)
+    lesson_progress = {lesson.id: lesson_progress_for_user(lesson.id, current_user.id) for lesson in topic.lessons} if current_user.is_authenticated else {}
+    return render_template('course.html', topic=topic, progress=topic_progress(topic, current_user.id) if current_user.is_authenticated else 0,
+                           lesson_progress=lesson_progress)
 
 @bp.route('/lesson/<int:lesson_id>')
 @login_required
 def lesson(lesson_id):
-    l=db.session.get(Lesson,lesson_id) or abort(404); c=l.module.course
-    if not enrolled(c):flash('Enroll in the course first.','warning');return redirect(url_for('auth.course_detail',course_id=c.id))
-    questions=l.questions; scenario=Scenario.query.filter_by(lesson_id=l.id).first(); prog=LessonProgress.query.filter_by(user_id=current_user.id,lesson_id=l.id).first()
-    return render_template('lesson.html',lesson=l,course=c,questions=questions,scenario=scenario,prog=prog)
+    lesson = db.session.get(Lesson, lesson_id) or abort(404)
+    prog = get_or_create_lesson_progress(current_user.id, lesson.id)
+    if not prog.completed and (prog.progress_percent or 0) < 5:
+        prog.progress_percent = 5
+        db.session.commit()
+    # Opening the lesson records that the learner has reached the reading material.
+    # The knowledge check is deliberately a separate screen after this step.
+    viewed_action = f'Viewed lesson: {lesson.title}'
+    if not LearningActivity.query.filter_by(user_id=current_user.id, action=viewed_action).first():
+        record(viewed_action)
+    return render_template('lesson.html', lesson=lesson, topic=lesson.topic, prog=prog, lesson_progress=lesson_progress_for_user(lesson.id, current_user.id))
 
-@bp.route('/lesson/<int:lesson_id>/quiz',methods=['POST'])
+@bp.route('/lesson/<int:lesson_id>/progress', methods=['POST'])
+@login_required
+def update_lesson_progress(lesson_id):
+    lesson = db.session.get(Lesson, lesson_id) or abort(404)
+    if not request.is_json:
+        return {'error': 'JSON request required'}, 400
+    try:
+        percent = int(request.json.get('percent', 0))
+    except (TypeError, ValueError):
+        return {'error': 'Invalid progress'}, 400
+    percent = max(0, min(99, percent))
+    progress = get_or_create_lesson_progress(current_user.id, lesson.id)
+    if not progress.completed and percent > (progress.progress_percent or 0):
+        progress.progress_percent = percent
+        db.session.commit()
+    return {'lesson_id': lesson.id, 'progress': lesson_progress_for_user(lesson.id, current_user.id)}
+
+
+@bp.route('/lesson/<int:lesson_id>/quiz', methods=['GET','POST'])
 @login_required
 def quiz(lesson_id):
-    l=db.session.get(Lesson,lesson_id) or abort(404); qs=l.questions; score=0
+    lesson = db.session.get(Lesson, lesson_id) or abort(404)
+    viewed_action = f'Viewed lesson: {lesson.title}'
+    if not LearningActivity.query.filter_by(user_id=current_user.id, action=viewed_action).first():
+        flash('Please read the lesson material before starting the knowledge check.', 'warning')
+        return redirect(url_for('auth.lesson', lesson_id=lesson.id))
+    qs = lesson.questions
+    if request.method == 'GET':
+        return render_template('quiz.html', lesson=lesson, topic=lesson.topic, questions=qs)
+    score = 0
     for q in qs:
-        try: ans=int(request.form.get(f'q_{q.id}','-1'))
-        except ValueError: ans=-1
-        if ans==q.correct_index:score+=1
-    total=len(qs);pct=round(score/total*100,1) if total else 0
-    db.session.add(QuizAttempt(user_id=current_user.id,lesson_id=l.id,score=score,total=total,percentage=pct));db.session.commit()
-    return render_template('quiz_result.html',lesson=l,score=score,total=total,percentage=pct,questions=qs,answers=request.form)
+        try: ans = int(request.form.get(f'q_{q.id}', '-1'))
+        except ValueError: ans = -1
+        if ans == q.correct_index: score += 1
+    total = len(qs); pct = round(score / total * 100, 1) if total else 0
+    db.session.add(QuizAttempt(user_id=current_user.id, lesson_id=lesson.id, score=score, total=total, percentage=pct)); db.session.commit()
+    return render_template('quiz_result.html', lesson=lesson, topic=lesson.topic, score=score, total=total, percentage=pct, questions=qs, answers=request.form)
 
-@bp.route('/lesson/<int:lesson_id>/complete',methods=['POST'])
+@bp.route('/lesson/<int:lesson_id>/complete', methods=['POST'])
 @login_required
 def complete_lesson(lesson_id):
-    l=db.session.get(Lesson,lesson_id) or abort(404); c=l.module.course
-    q=QuizAttempt.query.filter_by(user_id=current_user.id,lesson_id=l.id).order_by(QuizAttempt.created_at.desc()).first()
-    if not q or q.percentage < 70: flash('Complete the lesson knowledge check with at least 70% before marking this lesson complete.','warning');return redirect(url_for('auth.lesson',lesson_id=l.id))
-    p=LessonProgress.query.filter_by(user_id=current_user.id,lesson_id=l.id).first()
-    if not p:p=LessonProgress(user_id=current_user.id,lesson_id=l.id);db.session.add(p)
-    p.completed=True;p.completed_at=datetime.utcnow();db.session.commit();record(f'Completed lesson: {l.title}')
-    return redirect(url_for('auth.course_detail',course_id=c.id))
+    lesson = db.session.get(Lesson, lesson_id) or abort(404)
+    latest = QuizAttempt.query.filter_by(user_id=current_user.id, lesson_id=lesson.id).order_by(QuizAttempt.created_at.desc()).first()
+    if not latest or latest.percentage < 70:
+        flash('Score at least 70% on the knowledge check before completing this lesson.', 'warning')
+        return redirect(url_for('auth.lesson', lesson_id=lesson.id))
+    p = get_or_create_lesson_progress(current_user.id, lesson.id)
+    p.completed = True; p.progress_percent = 100; p.completed_at = datetime.utcnow()
+    db.session.commit(); record(f'Completed lesson: {lesson.title}')
+    certificate = issue_certificate_if_eligible(current_user.id)
+    if certificate:
+        flash('Congratulations! You completed the full programme. Your certificate is ready.', 'success')
+    return redirect(url_for('auth.topic_detail', topic_id=lesson.topic_id))
 
-@bp.route('/course/<int:course_id>/final',methods=['GET','POST'])
+@bp.route('/certificate')
 @login_required
-def final_assessment(course_id):
-    c=db.session.get(Course,course_id) or abort(404)
-    if not enrolled(c):return redirect(url_for('auth.course_detail',course_id=c.id))
-    lessons=[l for m in c.modules for l in m.lessons];completed=sum(bool(LessonProgress.query.filter_by(user_id=current_user.id,lesson_id=l.id,completed=True).first()) for l in lessons)
-    if completed<len(lessons):flash('Complete all required lessons before the final assessment.','warning');return redirect(url_for('auth.course_detail',course_id=c.id))
-    qs=[]
-    for l in lessons: qs.extend(l.questions)
-    qs=qs[:10]
-    if request.method=='POST':
-        score=sum(1 for q in qs if request.form.get(f'q_{q.id}')==str(q.correct_index));total=len(qs);pct=round(score/total*100,1) if total else 0;passed=pct>=70
-        a=FinalAttempt(user_id=current_user.id,course_id=c.id,score=score,total=total,percentage=pct,passed=passed);db.session.add(a);db.session.commit()
-        if passed and not Certificate.query.filter_by(user_id=current_user.id,course_id=c.id,revoked=False).first():
-            count=Certificate.query.count()+1;cid=f'CSEP-{datetime.utcnow().year}-{count:06d}';db.session.add(Certificate(user_id=current_user.id,course_id=c.id,certificate_id=cid));db.session.commit()
-        issued_cert=Certificate.query.filter_by(user_id=current_user.id,course_id=c.id,revoked=False).first() if passed else None
-        return render_template('final_result.html',course=c,score=score,total=total,percentage=pct,passed=passed,issued_cert=issued_cert)
-    return render_template('final.html',course=c,questions=qs)
+def certificate():
+    if current_user.role == 'admin':
+        return redirect(url_for('auth.admin_dashboard'))
+    certificate = issue_certificate_if_eligible(current_user.id)
+    if not certificate:
+        flash('Complete all lessons to unlock your certificate.', 'warning')
+        return redirect(url_for('auth.dashboard'))
+    return render_template('certificate.html', certificate=certificate)
 
-@bp.route('/certificate/<certificate_id>')
+
+@bp.route('/certificate/download')
 @login_required
-def certificate(certificate_id):
-    cert=Certificate.query.filter_by(certificate_id=certificate_id,user_id=current_user.id).first() or abort(404);course=db.session.get(Course,cert.course_id);user=db.session.get(User,cert.user_id)
-    return render_template('certificate.html',cert=cert,course=course,user=user)
+def certificate_download():
+    if current_user.role == 'admin':
+        return redirect(url_for('auth.admin_dashboard'))
+    certificate = issue_certificate_if_eligible(current_user.id)
+    if not certificate:
+        flash('Complete all lessons to unlock your certificate.', 'warning')
+        return redirect(url_for('auth.dashboard'))
 
-@bp.route('/certificate/<certificate_id>/pdf')
-@login_required
-def certificate_pdf(certificate_id):
-    cert=Certificate.query.filter_by(certificate_id=certificate_id,user_id=current_user.id).first() or abort(404)
-    course=db.session.get(Course,cert.course_id)
-    user=db.session.get(User,cert.user_id)
-
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib import colors
-    from reportlab.lib.utils import ImageReader
-    import qrcode
-
-    buf=BytesIO()
-    c=canvas.Canvas(buf,pagesize=landscape(A4))
-    w,h=landscape(A4)
-
-    # Professional certificate frame and restrained cybersecurity palette.
-    navy=colors.HexColor('#14213D')
-    blue=colors.HexColor('#3157D5')
-    pale=colors.HexColor('#F4F7FF')
-    ink=colors.HexColor('#172033')
-    muted=colors.HexColor('#667085')
-
-    c.setFillColor(pale); c.rect(0,0,w,h,fill=1,stroke=0)
-    c.setStrokeColor(navy); c.setLineWidth(3); c.roundRect(28,28,w-56,h-56,14,fill=0,stroke=1)
-    c.setStrokeColor(blue); c.setLineWidth(1); c.roundRect(40,40,w-80,h-80,10,fill=0,stroke=1)
-
-    # Decorative corner marks.
-    c.setFillColor(blue)
-    for x,y in [(58,h-70),(w-58,h-70),(58,58),(w-58,58)]:
-        c.circle(x,y,5,fill=1,stroke=0)
-
-    c.setFillColor(blue); c.setFont('Helvetica-Bold',11)
-    c.drawCentredString(w/2,h-78,'CS CYBERSAFE LEARN')
-    c.setFillColor(navy); c.setFont('Helvetica-Bold',30)
-    c.drawCentredString(w/2,h-125,'CERTIFICATE OF COMPLETION')
-    c.setFillColor(muted); c.setFont('Helvetica',12)
-    c.drawCentredString(w/2,h-153,'This certificate is proudly presented to')
-
-    c.setFillColor(ink); c.setFont('Helvetica-Bold',25)
-    c.drawCentredString(w/2,h-205,user.full_name)
-    c.setStrokeColor(blue); c.setLineWidth(1)
-    c.line(w/2-160,h-215,w/2+160,h-215)
-
-    c.setFillColor(muted); c.setFont('Helvetica',12)
-    c.drawCentredString(w/2,h-250,'for successfully completing the course')
-    c.setFillColor(navy); c.setFont('Helvetica-Bold',18)
-    c.drawCentredString(w/2,h-280,course.title)
-
-    c.setFillColor(ink); c.setFont('Helvetica',10)
-    c.drawString(70,75,f'Certificate ID: {cert.certificate_id}')
-    c.drawString(70,58,f'Issued: {cert.issued_at.strftime("%d %B %Y")}')
-    c.setFillColor(muted)
-    c.drawString(w-255,75,'Verify this certificate using the QR code')
-
-    verification_url=url_for('auth.verify_certificate',certificate_id=cert.certificate_id,_external=True)
-    qr=qrcode.make(verification_url)
-    qbuf=BytesIO(); qr.save(qbuf,format='PNG'); qbuf.seek(0)
-    c.drawImage(ImageReader(qbuf),w-150,48,width=78,height=78,mask='auto')
-
-    c.setFillColor(muted); c.setFont('Helvetica-Oblique',9)
-    c.drawCentredString(w/2,42,'Educational certificate issued by CS CyberSafe Learn.')
-
-    c.save(); buf.seek(0)
-    return send_file(buf,as_attachment=True,
-                     download_name=f'{cert.certificate_id}.pdf',
-                     mimetype='application/pdf')
-
-@bp.route('/verify/<certificate_id>')
-def verify_certificate(certificate_id):
-    cert=Certificate.query.filter_by(certificate_id=certificate_id,revoked=False).first()
-    if not cert:return render_template('verify.html',valid=False,certificate_id=certificate_id)
-    user=db.session.get(User,cert.user_id);course=db.session.get(Course,cert.course_id)
-    return render_template('verify.html',valid=True,certificate_id=certificate_id,user=user,course=course,cert=cert)
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=landscape(A4))
+    width, height = landscape(A4)
+    pdf.setTitle('CS CyberSafe Learn Certificate')
+    pdf.setFont('Helvetica-Bold', 28)
+    pdf.drawCentredString(width / 2, height - 55 * mm, 'CERTIFICATE OF COMPLETION')
+    pdf.setFont('Helvetica', 13)
+    pdf.drawCentredString(width / 2, height - 72 * mm, 'This certifies that')
+    pdf.setFont('Helvetica-Bold', 24)
+    pdf.drawCentredString(width / 2, height - 91 * mm, current_user.full_name)
+    pdf.setFont('Helvetica', 13)
+    pdf.drawCentredString(width / 2, height - 108 * mm, 'has successfully completed the CS CyberSafe Learn programme.')
+    pdf.setFont('Helvetica', 10)
+    pdf.drawCentredString(width / 2, 35 * mm, f'Certificate No. {certificate.certificate_number}  •  Issued {certificate.issued_at:%d %B %Y}')
+    pdf.save()
+    buffer.seek(0)
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True,
+                     download_name=f'CS-CyberSafe-Certificate-{current_user.id}.pdf')
 
 
-# Admin
-
-def admin_required():
-    if not current_user.is_authenticated or current_user.role!='admin': abort(403)
-
+# ---------------- Admin ----------------
 @bp.route('/admin')
-@login_required
 def admin_dashboard():
-    admin_required();return render_template('admin/dashboard.html',courses=Course.query.count(),students=User.query.filter_by(role='student').count(),certs=Certificate.query.count(),attempts=FinalAttempt.query.count())
+    gate = admin_required()
+    if gate: return gate
+    students = User.query.filter_by(role='student').order_by(User.created_at.desc()).all()
+    return render_template('admin/dashboard.html', students=students, topics=Topic.query.order_by(Topic.position).all(), lesson_count=Lesson.query.count(), question_count=QuizQuestion.query.count(), attempt_count=QuizAttempt.query.count(), completed_count=LessonProgress.query.filter_by(completed=True).count())
 
-@bp.route('/admin/courses')
-@login_required
-def admin_courses():
-    admin_required();return render_template('admin/courses.html',courses=Course.query.all())
-
-@bp.route('/admin/courses/<int:course_id>/delete',methods=['POST'])
-@login_required
-def admin_delete_course(course_id):
-    admin_required();c=db.session.get(Course,course_id) or abort(404);db.session.delete(c);db.session.commit();flash('Course deleted.','success');return redirect(url_for('auth.admin_courses'))
-
-@bp.route('/admin/students')
-@login_required
+@bp.route('/admin/users')
 def admin_students():
-    admin_required();return render_template('admin/students.html',students=User.query.filter_by(role='student').order_by(User.created_at.desc()).all())
+    gate = admin_required()
+    if gate: return gate
+    return render_template('admin/students.html', students=User.query.filter_by(role='student').order_by(User.created_at.desc()).all())
+
+@bp.route('/admin/users/<int:user_id>')
+def admin_student_detail(user_id):
+    gate = admin_required()
+    if gate: return gate
+    student = User.query.filter_by(id=user_id, role='student').first() or abort(404)
+    progress = LessonProgress.query.filter_by(user_id=student.id, completed=True).count()
+    attempts = QuizAttempt.query.filter_by(user_id=student.id).order_by(QuizAttempt.created_at.desc()).all()
+    certificate = Certificate.query.filter_by(user_id=student.id).first()
+    return render_template('admin/student_detail.html', student=student, progress=progress, total=Lesson.query.count(), attempts=attempts, certificate=certificate)
+
+@bp.route('/admin/users/<int:user_id>/toggle-status', methods=['POST'])
+def admin_toggle_student(user_id):
+    gate = admin_required()
+    if gate: return gate
+    student = User.query.filter_by(id=user_id, role='student').first() or abort(404)
+    student.is_active = not student.is_active; db.session.commit()
+    flash(f"{student.full_name}'s account is now {'active' if student.is_active else 'inactive'}.", 'success')
+    return redirect(url_for('auth.admin_student_detail', user_id=student.id))
+
+@bp.route('/admin/topics/new', methods=['GET','POST'])
+def admin_topic_new():
+    gate = admin_required()
+    if gate: return gate
+    topic = Topic.query.order_by(Topic.position.desc()).first() if False else None
+    if request.method == 'POST':
+        title = (request.form.get('title') or '').strip()
+        description = (request.form.get('description') or '').strip()
+        position_raw = (request.form.get('position') or '').strip()
+        if not title or not description:
+            flash('Topic title and description are required.', 'danger')
+            return render_template('admin/topic_form.html', topic=None, editing=False, next_position=(Topic.query.count() + 1))
+        existing = Topic.query.filter(func.lower(Topic.title) == title.lower()).first()
+        if existing:
+            flash('A topic with this title already exists. Use a different topic title.', 'danger')
+            return render_template('admin/topic_form.html', topic=None, editing=False, next_position=(Topic.query.count() + 1))
+        try:
+            position = int(position_raw) if position_raw else (Topic.query.count() + 1)
+        except ValueError:
+            position = Topic.query.count() + 1
+        base_slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or 'topic'
+        slug = base_slug
+        suffix = 2
+        while Topic.query.filter_by(slug=slug).first():
+            slug = f'{base_slug}-{suffix}'; suffix += 1
+        topic = Topic(title=title, slug=slug, description=description, position=max(1, position))
+        db.session.add(topic); db.session.commit()
+        flash('Topic added successfully.', 'success')
+        return redirect(url_for('auth.admin_topic_detail', topic_id=topic.id))
+    return render_template('admin/topic_form.html', topic=None, editing=False, next_position=Topic.query.count() + 1)
+
+@bp.route('/admin/topics/<int:topic_id>/edit', methods=['GET','POST'])
+def admin_topic_edit(topic_id):
+    gate = admin_required()
+    if gate: return gate
+    topic = db.session.get(Topic, topic_id) or abort(404)
+    if request.method == 'POST':
+        title = (request.form.get('title') or '').strip()
+        description = (request.form.get('description') or '').strip()
+        if not title or not description:
+            flash('Topic title and description are required.', 'danger')
+        else:
+            existing = Topic.query.filter(func.lower(Topic.title) == title.lower(), Topic.id != topic.id).first()
+            if existing:
+                flash('Another topic already uses this title. Choose a different title.', 'danger')
+            else:
+                base_slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-') or f'topic-{topic.id}'
+                slug = base_slug; suffix = 2
+                while True:
+                    conflict = Topic.query.filter(Topic.slug == slug, Topic.id != topic.id).first()
+                    if not conflict: break
+                    slug = f'{base_slug}-{suffix}'; suffix += 1
+                try:
+                    topic.position = max(1, int(request.form.get('position') or topic.position))
+                except ValueError:
+                    pass
+                topic.title = title; topic.description = description; topic.slug = slug
+                db.session.commit(); flash('Topic updated successfully.', 'success')
+                return redirect(url_for('auth.admin_topic_detail', topic_id=topic.id))
+    return render_template('admin/topic_form.html', topic=topic, editing=True, next_position=topic.position)
+
+@bp.route('/admin/topics/<int:topic_id>/delete', methods=['POST'])
+def admin_topic_delete(topic_id):
+    gate = admin_required()
+    if gate: return gate
+    topic = db.session.get(Topic, topic_id) or abort(404)
+    title = topic.title
+    db.session.delete(topic); db.session.commit()
+    flash(f'Topic "{title}" and its learning material were deleted.', 'success')
+    return redirect(url_for('auth.admin_topics'))
+
+@bp.route('/admin/topics')
+def admin_topics():
+    gate = admin_required()
+    if gate: return gate
+    return render_template('admin/topics.html', topics=Topic.query.order_by(Topic.position).all())
+
+@bp.route('/admin/topics/<int:topic_id>')
+def admin_topic_detail(topic_id):
+    gate = admin_required()
+    if gate: return gate
+    topic = db.session.get(Topic, topic_id) or abort(404)
+    return render_template('admin/topic_detail.html', topic=topic)
+
+@bp.route('/admin/lessons/new', methods=['GET','POST'])
+@bp.route('/admin/lessons/<int:lesson_id>/edit', methods=['GET','POST'])
+def admin_lesson_edit(lesson_id=None):
+    gate = admin_required()
+    if gate: return gate
+    lesson = db.session.get(Lesson, lesson_id) if lesson_id else Lesson(position=1, topic_id=int(request.args.get('topic_id') or 0))
+    if lesson_id and not lesson: abort(404)
+    topics = Topic.query.order_by(Topic.position).all()
+    if request.method == 'POST':
+        title = (request.form.get('title') or '').strip(); topic_id = request.form.get('topic_id')
+        if not title or not topic_id: flash('Topic and lesson title are required.', 'danger')
+        else:
+            if not lesson_id: db.session.add(lesson)
+            lesson.topic_id = int(topic_id); lesson.title = title
+            lesson.objectives = request.form.get('objectives','').strip(); lesson.content = request.form.get('content','').strip()
+            lesson.examples = request.form.get('examples','').strip(); lesson.takeaways = request.form.get('takeaways','').strip()
+            lesson.image_alt = request.form.get('image_alt','').strip(); lesson.position = int(request.form.get('position') or 1)
+            image = request.files.get('image_file')
+            if image and image.filename:
+                try:
+                    lesson.image_path = _save_content_image(image)
+                except ValueError as exc:
+                    flash(str(exc), 'danger'); return redirect(request.url)
+            db.session.commit(); flash('Lesson saved.', 'success'); return redirect(url_for('auth.admin_topic_detail', topic_id=lesson.topic_id))
+    return render_template('admin/lesson_form.html', lesson=lesson, topics=topics, editing=bool(lesson_id))
+
+@bp.route('/admin/lessons/<int:lesson_id>/delete', methods=['POST'])
+def admin_lesson_delete(lesson_id):
+    gate = admin_required()
+    if gate: return gate
+    lesson = db.session.get(Lesson, lesson_id) or abort(404); topic_id = lesson.topic_id
+    db.session.delete(lesson); db.session.commit(); flash('Lesson deleted.', 'success')
+    return redirect(url_for('auth.admin_topic_detail', topic_id=topic_id))
+
+@bp.route('/admin/questions/new', methods=['GET','POST'])
+@bp.route('/admin/questions/<int:question_id>/edit', methods=['GET','POST'])
+def admin_question_edit(question_id=None):
+    gate = admin_required()
+    if gate: return gate
+    q = db.session.get(QuizQuestion, question_id) if question_id else QuizQuestion(lesson_id=int(request.args.get('lesson_id') or 0))
+    if question_id and not q: abort(404)
+    lessons = Lesson.query.order_by(Lesson.title).all()
+    if request.method == 'POST':
+        q.lesson_id = int(request.form.get('lesson_id')); q.question = request.form.get('question','').strip(); q.explanation = request.form.get('explanation','').strip()
+        options = [request.form.get(f'option_{i}','').strip() for i in range(4)]
+        if not q.question or any(not x for x in options): flash('Question and all four options are required.', 'danger')
+        else:
+            q.options = json.dumps(options); q.correct_index = int(request.form.get('correct_index','0'))
+            if not question_id: db.session.add(q)
+            db.session.commit(); flash('Question saved.', 'success'); return redirect(url_for('auth.admin_topic_detail', topic_id=q.lesson.topic_id))
+    current_options = json.loads(q.options) if q.options else ['','','','']
+    return render_template('admin/question_form.html', question=q, lessons=lessons, options=current_options)
+
+@bp.route('/admin/questions/<int:question_id>/delete', methods=['POST'])
+def admin_question_delete(question_id):
+    gate = admin_required()
+    if gate: return gate
+    q = db.session.get(QuizQuestion, question_id) or abort(404); topic_id = q.lesson.topic_id
+    db.session.delete(q); db.session.commit(); flash('Question deleted.', 'success')
+    return redirect(url_for('auth.admin_topic_detail', topic_id=topic_id))
 
 @bp.route('/admin/results')
-@login_required
 def admin_results():
-    admin_required();rows=FinalAttempt.query.order_by(FinalAttempt.created_at.desc()).all();return render_template('admin/results.html',rows=rows)
+    gate = admin_required()
+    if gate: return gate
+    return render_template('admin/results.html', rows=QuizAttempt.query.order_by(QuizAttempt.created_at.desc()).all())

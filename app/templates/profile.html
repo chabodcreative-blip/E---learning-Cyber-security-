@@ -1,30 +1,13 @@
 {% extends 'base.html' %}
 {% block title %}Profile · CS CyberSafe Learn{% endblock %}
 {% block content %}
-<section class="page-banner"><div class="container"><div class="eyebrow"><i class="bi bi-person-circle me-1"></i> Account</div><h1>Your profile</h1><p>Manage your learner information and account security.</p></div></section>
-<div class="container py-4">
-<div class="row g-4">
-  <div class="col-lg-4">
-    <div class="profile-card">
-      <div class="profile-avatar">{{ current_user.full_name[:1].upper() }}</div>
-      <h2>{{ current_user.full_name }}</h2><p class="muted mb-4">{{ current_user.email }}</p>
-      <span class="role-pill"><i class="bi bi-mortarboard-fill"></i> Student / Learner</span>
-      <div class="profile-stats"><div><strong>{{ student_courses }}</strong><small>Enrolled</small></div><div><strong>{{ cert_count }}</strong><small>Certificates</small></div><div><strong>{{ activity_count }}</strong><small>Activities</small></div></div>
-    </div>
+<section class="profile-page motion-section"><div class="container">
+  <div class="eyebrow">PROFILE</div><div class="profile-layout mt-2">
+    <aside class="profile-card"><div class="profile-avatar profile-avatar-lg">{% if current_user.profile_photo %}<img src="{{url_for('static',filename=current_user.profile_photo)}}" alt="{{current_user.full_name}} profile picture">{% else %}<i class="bi bi-person-fill"></i>{% endif %}</div><h1 class="h3 mb-1">{{current_user.full_name}}</h1><p class="muted">{{current_user.email}}</p><div class="metric-card mt-4 text-start"><div class="muted">Lessons completed</div><div class="metric">{{completed}} / {{total}}</div></div><div class="metric-card mt-2 text-start"><div class="muted">Knowledge checks</div><div class="metric">{{attempt_count}}</div></div>
+      <div class="profile-photo-form"><div class="eyebrow">PROFILE PICTURE</div><p class="small muted">Use a clear PNG, JPG, JPEG or WebP image. Maximum upload size: 5 MB.</p><form method="post" action="{{url_for('auth.profile_photo')}}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><input class="form-control" id="profile_image" name="profile_image" type="file" accept="image/png,image/jpeg,image/webp" required><button class="btn btn-outline-primary w-100 mt-3" type="submit">Upload picture</button></form></div>
+      {% if certificate %}<div class="certificate-mini mt-3"><div class="eyebrow">CERTIFICATE</div><strong>Programme completed</strong><small>{{certificate.certificate_number}}</small><a href="{{url_for('auth.certificate')}}">View certificate →</a></div>{% endif %}
+    </aside>
+    <section class="settings-card"><div class="eyebrow">ACCOUNT SETTINGS</div><h2>Update your account</h2><p class="muted">Keep your name, email and password details current.</p><form method="post" class="mt-4"><input type="hidden" name="csrf_token" value="{{csrf_token()}}"><div class="row g-3"><div class="col-md-6"><label class="form-label">Full name</label><input class="form-control" name="full_name" value="{{current_user.full_name}}" required></div><div class="col-md-6"><label class="form-label">Email</label><input class="form-control" type="email" name="email" value="{{current_user.email}}" required></div><div class="col-md-4"><label class="form-label">Current password</label><input class="form-control" type="password" name="current_password"></div><div class="col-md-4"><label class="form-label">New password</label><input class="form-control" type="password" name="new_password"></div><div class="col-md-4"><label class="form-label">Confirm new password</label><input class="form-control" type="password" name="confirm_password"></div></div><button class="btn btn-primary mt-4">Save account changes</button></form></section>
   </div>
-  <div class="col-lg-8">
-    <div class="settings-card">
-      <div class="section-heading"><div><div class="eyebrow">Personal information</div><h2>Profile details</h2></div></div>
-      <form method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div class="row g-3"><div class="col-md-6"><label class="form-label">Full name</label><input class="form-control" name="full_name" value="{{ current_user.full_name }}" required maxlength="120"></div>
-        <div class="col-md-6"><label class="form-label">Email address</label><input class="form-control" type="email" name="email" value="{{ current_user.email }}" required maxlength="160"></div></div>
-        <hr class="my-4"><div class="eyebrow mb-1">Security</div><h3 class="h5 mb-3">Change password <span class="muted fw-normal">(optional)</span></h3>
-        <div class="row g-3"><div class="col-md-4"><label class="form-label">Current password</label><input class="form-control" type="password" name="current_password"></div><div class="col-md-4"><label class="form-label">New password</label><input class="form-control" type="password" name="new_password" minlength="8"></div><div class="col-md-4"><label class="form-label">Confirm new password</label><input class="form-control" type="password" name="confirm_password" minlength="8"></div></div>
-        <button class="btn btn-primary mt-4"><i class="bi bi-check2-circle me-1"></i> Save changes</button>
-      </form>
-    </div>
-  </div>
-</div>
-</div>
+</div></section>
 {% endblock %}
